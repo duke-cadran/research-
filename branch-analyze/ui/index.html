@@ -1,0 +1,1275 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Branch Autopsy · Dead Branch Analyzer</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400&family=Syne:wght@400;600;700;800&display=swap');
+
+    :root {
+      --bg: #0a0c0f;
+      --surface: #111418;
+      --surface2: #181c22;
+      --border: #22282f;
+      --accent: #e8ff47;
+      --accent-dim: #b8cc1a;
+      --red: #ff4757;
+      --red-dim: #c0392b;
+      --green: #2ecc71;
+      --blue: #3b82f6;
+      --purple: #8b5cf6;
+      --text: #e2e8f0;
+      --text-dim: #64748b;
+      --text-muted: #334155;
+      --mono: 'Space Mono', monospace;
+      --sans: 'Syne', sans-serif;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--sans);
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* Scanlines overlay */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background: repeating-linear-gradient(
+        0deg,
+        transparent,
+        transparent 2px,
+        rgba(0,0,0,0.03) 2px,
+        rgba(0,0,0,0.03) 4px
+      );
+      pointer-events: none;
+      z-index: 1000;
+    }
+
+    /* Sidebar */
+    .sidebar {
+      position: fixed;
+      left: 0; top: 0; bottom: 0;
+      width: 220px;
+      background: var(--surface);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      z-index: 100;
+    }
+
+    .logo {
+      padding: 24px 20px 16px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .logo-icon {
+      font-size: 24px;
+      margin-bottom: 6px;
+    }
+
+    .logo h1 {
+      font-family: var(--sans);
+      font-size: 14px;
+      font-weight: 800;
+      color: var(--accent);
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      line-height: 1.2;
+    }
+
+    .logo p {
+      font-family: var(--mono);
+      font-size: 10px;
+      color: var(--text-dim);
+      margin-top: 2px;
+    }
+
+    nav { padding: 12px 0; flex: 1; }
+
+    nav a {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 20px;
+      color: var(--text-dim);
+      text-decoration: none;
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+      transition: all 0.15s;
+      border-left: 2px solid transparent;
+    }
+
+    nav a:hover { color: var(--text); background: var(--surface2); }
+    nav a.active { color: var(--accent); border-left-color: var(--accent); background: rgba(232,255,71,0.04); }
+    nav a .nav-icon { font-size: 16px; width: 20px; text-align: center; }
+
+    .scan-btn {
+      margin: 12px;
+      padding: 10px;
+      background: var(--accent);
+      color: #000;
+      border: none;
+      border-radius: 6px;
+      font-family: var(--sans);
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      cursor: pointer;
+      text-transform: uppercase;
+      transition: all 0.15s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+    }
+
+    .scan-btn:hover { background: var(--accent-dim); }
+    .scan-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .scan-status {
+      margin: 0 12px 12px;
+      padding: 8px 10px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      font-family: var(--mono);
+      font-size: 10px;
+      color: var(--text-dim);
+      line-height: 1.5;
+    }
+
+    /* Main content */
+    .main {
+      margin-left: 220px;
+      min-height: 100vh;
+      padding: 32px;
+    }
+
+    .page { display: none; }
+    .page.active { display: block; }
+
+    /* Page header */
+    .page-header {
+      margin-bottom: 28px;
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 16px;
+    }
+
+    .page-title {
+      font-size: 28px;
+      font-weight: 800;
+      color: var(--text);
+      letter-spacing: -0.02em;
+    }
+
+    .page-sub {
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--text-dim);
+      margin-top: 4px;
+    }
+
+    /* Stat cards */
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 12px;
+      margin-bottom: 28px;
+    }
+
+    .stat-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .stat-card::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 2px;
+    }
+
+    .stat-card.dead::before { background: var(--red); }
+    .stat-card.active::before { background: var(--green); }
+    .stat-card.protected::before { background: var(--blue); }
+    .stat-card.total::before { background: var(--accent); }
+    .stat-card.repos::before { background: var(--purple); }
+
+    .stat-label {
+      font-family: var(--mono);
+      font-size: 10px;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-bottom: 8px;
+    }
+
+    .stat-value {
+      font-size: 32px;
+      font-weight: 800;
+      line-height: 1;
+      letter-spacing: -0.02em;
+    }
+
+    .stat-card.dead .stat-value { color: var(--red); }
+    .stat-card.active .stat-value { color: var(--green); }
+    .stat-card.protected .stat-value { color: var(--blue); }
+    .stat-card.total .stat-value { color: var(--accent); }
+    .stat-card.repos .stat-value { color: var(--purple); }
+
+    .stat-sub {
+      font-family: var(--mono);
+      font-size: 10px;
+      color: var(--text-muted);
+      margin-top: 4px;
+    }
+
+    /* Two-column dashboard grid */
+    .dash-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      margin-bottom: 28px;
+    }
+
+    /* Panel */
+    .panel {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    .panel-header {
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .panel-title {
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--text-dim);
+    }
+
+    .panel-body { padding: 0; }
+
+    /* Reason bar chart */
+    .reason-row {
+      padding: 10px 16px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .reason-row:last-child { border-bottom: none; }
+
+    .reason-label {
+      font-family: var(--mono);
+      font-size: 10px;
+      color: var(--text-dim);
+      flex: 0 0 180px;
+      line-height: 1.3;
+    }
+
+    .reason-bar-wrap {
+      flex: 1;
+      height: 6px;
+      background: var(--border);
+      border-radius: 3px;
+      overflow: hidden;
+    }
+
+    .reason-bar {
+      height: 100%;
+      background: var(--red);
+      border-radius: 3px;
+      transition: width 0.6s cubic-bezier(0.34, 1.56, 0.64, 1);
+    }
+
+    .reason-count {
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--text);
+      font-weight: 700;
+      flex: 0 0 30px;
+      text-align: right;
+    }
+
+    /* Repo list */
+    .repo-row {
+      padding: 10px 16px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      cursor: pointer;
+      transition: background 0.1s;
+    }
+
+    .repo-row:last-child { border-bottom: none; }
+    .repo-row:hover { background: var(--surface2); }
+
+    .repo-name {
+      font-family: var(--mono);
+      font-size: 12px;
+      color: var(--text);
+    }
+
+    .repo-badges {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+    }
+
+    .badge {
+      font-family: var(--mono);
+      font-size: 10px;
+      font-weight: 700;
+      padding: 2px 7px;
+      border-radius: 3px;
+    }
+
+    .badge.dead { background: rgba(255,71,87,0.15); color: var(--red); }
+    .badge.active { background: rgba(46,204,113,0.12); color: var(--green); }
+    .badge.total { background: var(--surface2); color: var(--text-dim); }
+
+    /* Filters bar */
+    .filters {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 16px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    .filter-input {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px 12px;
+      color: var(--text);
+      font-family: var(--mono);
+      font-size: 12px;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+
+    .filter-input:focus { border-color: var(--accent); }
+    .filter-input::placeholder { color: var(--text-muted); }
+
+    select.filter-input {
+      cursor: pointer;
+      min-width: 130px;
+    }
+
+    /* Branch table */
+    .branch-table-wrap {
+      overflow-x: auto;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+    }
+
+    thead tr {
+      border-bottom: 1px solid var(--border);
+    }
+
+    th {
+      padding: 10px 14px;
+      text-align: left;
+      font-family: var(--mono);
+      font-size: 10px;
+      font-weight: 700;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      white-space: nowrap;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    th:hover { color: var(--text); }
+
+    td {
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--border);
+      vertical-align: middle;
+    }
+
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: var(--surface2); }
+
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-family: var(--mono);
+      font-size: 10px;
+      font-weight: 700;
+      padding: 3px 8px;
+      border-radius: 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+
+    .status-pill.dead { background: rgba(255,71,87,0.15); color: var(--red); }
+    .status-pill.active { background: rgba(46,204,113,0.1); color: var(--green); }
+    .status-pill.protected { background: rgba(59,130,246,0.12); color: var(--blue); }
+    .status-pill.unknown { background: var(--surface2); color: var(--text-muted); }
+
+    .branch-name-cell {
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--text);
+      max-width: 220px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .reasons-cell {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+    }
+
+    .reason-tag {
+      font-family: var(--mono);
+      font-size: 9px;
+      padding: 2px 5px;
+      background: rgba(255,71,87,0.1);
+      color: #ff6b7a;
+      border-radius: 3px;
+      white-space: nowrap;
+    }
+
+    .author-cell {
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--text-dim);
+    }
+
+    .date-cell {
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--text-dim);
+      white-space: nowrap;
+    }
+
+    .date-cell.stale { color: var(--red); }
+
+    /* Pagination */
+    .pagination {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 16px;
+      justify-content: center;
+    }
+
+    .page-btn {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--text-dim);
+      font-family: var(--mono);
+      font-size: 12px;
+      padding: 6px 12px;
+      border-radius: 5px;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+
+    .page-btn:hover { border-color: var(--accent); color: var(--accent); }
+    .page-btn.active { border-color: var(--accent); color: var(--accent); background: rgba(232,255,71,0.05); }
+    .page-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+
+    .page-info {
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--text-dim);
+    }
+
+    /* Modal */
+    .modal-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.7);
+      z-index: 200;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      backdrop-filter: blur(4px);
+    }
+
+    .modal-overlay.open { display: flex; }
+
+    .modal {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      width: min(700px, 95vw);
+      max-height: 85vh;
+      overflow-y: auto;
+      padding: 28px;
+    }
+
+    .modal-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      margin-bottom: 20px;
+    }
+
+    .modal-close {
+      background: none;
+      border: none;
+      color: var(--text-dim);
+      font-size: 20px;
+      cursor: pointer;
+      padding: 0;
+      line-height: 1;
+    }
+
+    .modal-close:hover { color: var(--text); }
+
+    .detail-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin-bottom: 20px;
+    }
+
+    .detail-item {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 12px;
+    }
+
+    .detail-key {
+      font-family: var(--mono);
+      font-size: 9px;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-bottom: 4px;
+    }
+
+    .detail-val {
+      font-family: var(--mono);
+      font-size: 13px;
+      color: var(--text);
+      word-break: break-all;
+    }
+
+    .reasons-list { list-style: none; }
+
+    .reasons-list li {
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      font-size: 13px;
+    }
+
+    .reasons-list li:last-child { border-bottom: none; }
+
+    .reasons-list .r-icon { font-size: 16px; flex-shrink: 0; margin-top: 1px; }
+
+    /* Empty state */
+    .empty {
+      text-align: center;
+      padding: 60px 20px;
+      color: var(--text-muted);
+    }
+
+    .empty-icon { font-size: 48px; margin-bottom: 12px; }
+    .empty-title { font-size: 16px; font-weight: 700; color: var(--text-dim); }
+    .empty-sub { font-family: var(--mono); font-size: 12px; margin-top: 6px; }
+
+    /* Loading */
+    .loading {
+      text-align: center;
+      padding: 40px;
+      font-family: var(--mono);
+      font-size: 13px;
+      color: var(--text-dim);
+    }
+
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+    .loading { animation: pulse 1.5s ease-in-out infinite; }
+
+    /* Toasts */
+    .toast-container {
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      z-index: 300;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .toast {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px 16px;
+      font-family: var(--mono);
+      font-size: 12px;
+      color: var(--text);
+      animation: slideIn 0.3s ease;
+      max-width: 320px;
+    }
+
+    .toast.success { border-left: 3px solid var(--green); }
+    .toast.error { border-left: 3px solid var(--red); }
+    .toast.info { border-left: 3px solid var(--accent); }
+
+    @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+  </style>
+</head>
+<body>
+
+<!-- Sidebar -->
+<nav class="sidebar">
+  <div class="logo">
+    <div class="logo-icon">🔬</div>
+    <h1>Branch Autopsy</h1>
+    <p>Dead Branch Analyzer</p>
+  </div>
+
+  <nav>
+    <a href="#" class="active" data-page="dashboard">
+      <span class="nav-icon">📊</span> Dashboard
+    </a>
+    <a href="#" data-page="branches">
+      <span class="nav-icon">🌿</span> All Branches
+    </a>
+    <a href="#" data-page="dead">
+      <span class="nav-icon">💀</span> Dead Branches
+    </a>
+    <a href="#" data-page="repos">
+      <span class="nav-icon">📦</span> Repositories
+    </a>
+    <a href="#" data-page="scans">
+      <span class="nav-icon">🔄</span> Scan History
+    </a>
+  </nav>
+
+  <button class="scan-btn" id="triggerScanBtn" onclick="triggerScan()">
+    ⚡ Run Scan
+  </button>
+  <div class="scan-status" id="scanStatus">No scan running</div>
+</nav>
+
+<!-- Main -->
+<main class="main">
+
+  <!-- Dashboard -->
+  <div class="page active" id="page-dashboard">
+    <div class="page-header">
+      <div>
+        <div class="page-title">Overview</div>
+        <div class="page-sub" id="lastScanInfo">Last scan: —</div>
+      </div>
+    </div>
+    <div class="stats-grid" id="statsGrid">
+      <div class="loading">Loading stats...</div>
+    </div>
+    <div class="dash-grid">
+      <div class="panel">
+        <div class="panel-header">
+          <span class="panel-title">Top Dead Reasons</span>
+        </div>
+        <div class="panel-body" id="reasonsChart">
+          <div class="loading">Loading...</div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-header">
+          <span class="panel-title">Worst Repos</span>
+        </div>
+        <div class="panel-body" id="repoList">
+          <div class="loading">Loading...</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- All Branches -->
+  <div class="page" id="page-branches">
+    <div class="page-header">
+      <div>
+        <div class="page-title">All Branches</div>
+        <div class="page-sub" id="branchesCount">—</div>
+      </div>
+    </div>
+    <div class="filters">
+      <input class="filter-input" id="branchSearch" placeholder="🔍 Search branch name..." style="min-width:200px" oninput="debounceLoad('branches')" />
+      <select class="filter-input" id="branchStatusFilter" onchange="loadBranches()">
+        <option value="">All Statuses</option>
+        <option value="dead">Dead</option>
+        <option value="active">Active</option>
+        <option value="protected">Protected</option>
+      </select>
+      <select class="filter-input" id="branchRepoFilter" onchange="loadBranches()">
+        <option value="">All Repos</option>
+      </select>
+      <input class="filter-input" id="branchAuthorFilter" placeholder="Filter by author..." oninput="debounceLoad('branches')" />
+    </div>
+    <div class="branch-table-wrap" id="branchesTable">
+      <div class="loading">Loading branches...</div>
+    </div>
+    <div class="pagination" id="branchesPagination"></div>
+  </div>
+
+  <!-- Dead Branches -->
+  <div class="page" id="page-dead">
+    <div class="page-header">
+      <div>
+        <div class="page-title">Dead Branches</div>
+        <div class="page-sub" id="deadCount">—</div>
+      </div>
+    </div>
+    <div class="filters">
+      <input class="filter-input" id="deadSearch" placeholder="🔍 Search branch name..." style="min-width:200px" oninput="debounceLoad('dead')" />
+      <select class="filter-input" id="deadReasonFilter" onchange="loadDead()">
+        <option value="">All Reasons</option>
+        <option value="no_commits_6_months">No recent commits</option>
+        <option value="last_action_merge_30_days">Stale after merge</option>
+        <option value="branch_over_1_year">Over 1 year old</option>
+        <option value="all_commits_in_default">Fully merged</option>
+        <option value="no_open_prs_and_inactive">No open PRs</option>
+        <option value="author_inactive_90_days">Author inactive</option>
+        <option value="100_plus_commits_behind_default">Far behind default</option>
+        <option value="single_commit_never_developed">Single commit</option>
+      </select>
+      <select class="filter-input" id="deadRepoFilter" onchange="loadDead()">
+        <option value="">All Repos</option>
+      </select>
+    </div>
+    <div class="branch-table-wrap" id="deadTable">
+      <div class="loading">Loading dead branches...</div>
+    </div>
+    <div class="pagination" id="deadPagination"></div>
+  </div>
+
+  <!-- Repos -->
+  <div class="page" id="page-repos">
+    <div class="page-header">
+      <div>
+        <div class="page-title">Repositories</div>
+        <div class="page-sub">Branch health by repository</div>
+      </div>
+    </div>
+    <div class="branch-table-wrap" id="reposTable">
+      <div class="loading">Loading repos...</div>
+    </div>
+  </div>
+
+  <!-- Scan History -->
+  <div class="page" id="page-scans">
+    <div class="page-header">
+      <div>
+        <div class="page-title">Scan History</div>
+        <div class="page-sub">All scan runs</div>
+      </div>
+    </div>
+    <div class="branch-table-wrap" id="scansTable">
+      <div class="loading">Loading scan history...</div>
+    </div>
+  </div>
+
+</main>
+
+<!-- Branch Detail Modal -->
+<div class="modal-overlay" id="branchModal">
+  <div class="modal">
+    <div class="modal-header">
+      <div>
+        <div style="font-family:var(--mono);font-size:10px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.08em;margin-bottom:4px" id="modalRepo"></div>
+        <div style="font-size:18px;font-weight:800;word-break:break-all" id="modalBranchName"></div>
+      </div>
+      <button class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    <div id="modalContent"></div>
+  </div>
+</div>
+
+<!-- Toast container -->
+<div class="toast-container" id="toastContainer"></div>
+
+<script>
+  const API = 'http://localhost:8000/api';
+  let currentPages = { branches: 1, dead: 1 };
+  let debounceTimers = {};
+
+  // ----- Navigation -----
+  document.querySelectorAll('nav a[data-page]').forEach(link => {
+    link.addEventListener('click', e => {
+      e.preventDefault();
+      const page = link.dataset.page;
+      document.querySelectorAll('nav a').forEach(a => a.classList.remove('active'));
+      link.classList.add('active');
+      document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+      document.getElementById('page-' + page).classList.add('active');
+      loadPage(page);
+    });
+  });
+
+  function loadPage(page) {
+    if (page === 'dashboard') loadDashboard();
+    else if (page === 'branches') { currentPages.branches = 1; loadBranches(); loadRepoOptions('branchRepoFilter'); }
+    else if (page === 'dead') { currentPages.dead = 1; loadDead(); loadRepoOptions('deadRepoFilter'); }
+    else if (page === 'repos') loadRepos();
+    else if (page === 'scans') loadScans();
+  }
+
+  // ----- API helpers -----
+  async function apiFetch(path) {
+    try {
+      const r = await fetch(API + path);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return await r.json();
+    } catch (e) {
+      showToast('API error: ' + e.message, 'error');
+      return null;
+    }
+  }
+
+  function debounceLoad(page, delay = 350) {
+    clearTimeout(debounceTimers[page]);
+    debounceTimers[page] = setTimeout(() => {
+      currentPages[page] = 1;
+      if (page === 'branches') loadBranches();
+      else if (page === 'dead') loadDead();
+    }, delay);
+  }
+
+  // ----- Dashboard -----
+  async function loadDashboard() {
+    const stats = await apiFetch('/stats');
+    if (!stats) return;
+
+    document.getElementById('lastScanInfo').textContent =
+      stats.last_scan ? 'Last scan: ' + fmtDate(stats.last_scan) : 'No scans yet';
+
+    document.getElementById('statsGrid').innerHTML = `
+      <div class="stat-card total">
+        <div class="stat-label">Total Branches</div>
+        <div class="stat-value">${stats.total_branches.toLocaleString()}</div>
+        <div class="stat-sub">${stats.repos_scanned} repos</div>
+      </div>
+      <div class="stat-card dead">
+        <div class="stat-label">Dead</div>
+        <div class="stat-value">${stats.dead_branches.toLocaleString()}</div>
+        <div class="stat-sub">${stats.dead_percentage}% of total</div>
+      </div>
+      <div class="stat-card active">
+        <div class="stat-label">Active</div>
+        <div class="stat-value">${stats.active_branches.toLocaleString()}</div>
+      </div>
+      <div class="stat-card protected">
+        <div class="stat-label">Protected</div>
+        <div class="stat-value">${stats.protected_branches.toLocaleString()}</div>
+      </div>
+      <div class="stat-card repos">
+        <div class="stat-label">Repos</div>
+        <div class="stat-value">${stats.repos_scanned}</div>
+      </div>
+    `;
+
+    // Reasons chart
+    const maxCount = Math.max(...stats.top_dead_reasons.map(r => r.count), 1);
+    document.getElementById('reasonsChart').innerHTML = stats.top_dead_reasons.length
+      ? stats.top_dead_reasons.map(r => `
+          <div class="reason-row">
+            <div class="reason-label">${r.description || r.reason}</div>
+            <div class="reason-bar-wrap">
+              <div class="reason-bar" style="width:${Math.round(r.count/maxCount*100)}%"></div>
+            </div>
+            <div class="reason-count">${r.count}</div>
+          </div>`).join('')
+      : '<div class="empty"><div class="empty-sub">No dead branches found yet</div></div>';
+
+    // Repo list
+    const repos = await apiFetch('/repos');
+    if (!repos) return;
+    document.getElementById('repoList').innerHTML = repos.slice(0, 10).map(r => `
+      <div class="repo-row" onclick="filterByRepo('${r.repo_slug}')">
+        <div class="repo-name">${r.repo_slug}</div>
+        <div class="repo-badges">
+          <span class="badge dead">${r.dead} dead</span>
+          <span class="badge active">${r.active} active</span>
+          <span class="badge total">${r.total}</span>
+        </div>
+      </div>`).join('') || '<div class="empty"><div class="empty-sub">No repos scanned yet</div></div>';
+  }
+
+  function filterByRepo(slug) {
+    document.querySelector('nav a[data-page="dead"]').click();
+    setTimeout(() => {
+      document.getElementById('deadRepoFilter').value = slug;
+      loadDead();
+    }, 50);
+  }
+
+  // ----- Branch table rendering -----
+  function branchTableHTML(branches) {
+    if (!branches.length) return `<div class="empty"><div class="empty-icon">🌾</div><div class="empty-title">No branches found</div><div class="empty-sub">Try adjusting your filters</div></div>`;
+    return `<table>
+      <thead><tr>
+        <th>Repo</th>
+        <th>Branch</th>
+        <th>Status</th>
+        <th>Last Commit</th>
+        <th>Author</th>
+        <th>Dead Reasons</th>
+        <th>PRs</th>
+      </tr></thead>
+      <tbody>
+        ${branches.map(b => `
+          <tr onclick="showBranch('${b.repo_slug}', '${encodeURIComponent(b.branch_name)}')" style="cursor:pointer">
+            <td><span style="font-family:var(--mono);font-size:11px;color:var(--text-dim)">${b.repo_slug}</span></td>
+            <td><div class="branch-name-cell" title="${b.branch_name}">${b.branch_name}</div></td>
+            <td>${statusPill(b.status)}</td>
+            <td><div class="date-cell ${isStale(b.latest_commit_date) ? 'stale' : ''}">${fmtDate(b.latest_commit_date)}</div></td>
+            <td><div class="author-cell">${b.latest_commit_author || '—'}</div></td>
+            <td><div class="reasons-cell">${(b.dead_reasons||[]).map(r => `<span class="reason-tag">${r.replace(/_/g,' ')}</span>`).join('')}</div></td>
+            <td><span style="font-family:var(--mono);font-size:11px;color:${b.open_pr_count>0?'var(--green)':'var(--text-muted)'}">${b.open_pr_count}</span></td>
+          </tr>`).join('')}
+      </tbody>
+    </table>`;
+  }
+
+  // ----- Load branches -----
+  async function loadBranches() {
+    document.getElementById('branchesTable').innerHTML = '<div class="loading">Loading...</div>';
+    const search = document.getElementById('branchSearch').value;
+    const status = document.getElementById('branchStatusFilter').value;
+    const repo = document.getElementById('branchRepoFilter').value;
+    const author = document.getElementById('branchAuthorFilter').value;
+    const page = currentPages.branches;
+
+    let url = `/branches?page=${page}&page_size=50`;
+    if (search) url += `&search=${encodeURIComponent(search)}`;
+    if (status) url += `&status=${status}`;
+    if (repo) url += `&repo=${repo}`;
+    if (author) url += `&author=${encodeURIComponent(author)}`;
+
+    const data = await apiFetch(url);
+    if (!data) return;
+
+    document.getElementById('branchesCount').textContent = `${data.total.toLocaleString()} branches`;
+    document.getElementById('branchesTable').innerHTML = branchTableHTML(data.branches);
+    renderPagination('branchesPagination', data.page, data.pages, p => { currentPages.branches = p; loadBranches(); });
+  }
+
+  // ----- Load dead branches -----
+  async function loadDead() {
+    document.getElementById('deadTable').innerHTML = '<div class="loading">Loading...</div>';
+    const search = document.getElementById('deadSearch').value;
+    const reason = document.getElementById('deadReasonFilter').value;
+    const repo = document.getElementById('deadRepoFilter').value;
+    const page = currentPages.dead;
+
+    let url = `/branches?status=dead&page=${page}&page_size=50`;
+    if (search) url += `&search=${encodeURIComponent(search)}`;
+    if (reason) url += `&reason=${reason}`;
+    if (repo) url += `&repo=${repo}`;
+
+    const data = await apiFetch(url);
+    if (!data) return;
+
+    document.getElementById('deadCount').textContent = `${data.total.toLocaleString()} dead branches`;
+    document.getElementById('deadTable').innerHTML = branchTableHTML(data.branches);
+    renderPagination('deadPagination', data.page, data.pages, p => { currentPages.dead = p; loadDead(); });
+  }
+
+  // ----- Load repos -----
+  async function loadRepos() {
+    document.getElementById('reposTable').innerHTML = '<div class="loading">Loading...</div>';
+    const repos = await apiFetch('/repos');
+    if (!repos) return;
+
+    if (!repos.length) {
+      document.getElementById('reposTable').innerHTML = '<div class="empty"><div class="empty-icon">📦</div><div class="empty-title">No repos scanned yet</div></div>';
+      return;
+    }
+
+    document.getElementById('reposTable').innerHTML = `<table>
+      <thead><tr>
+        <th>Repository</th>
+        <th>Total</th>
+        <th>Dead</th>
+        <th>Active</th>
+        <th>Protected</th>
+        <th>Dead %</th>
+        <th>Health</th>
+      </tr></thead>
+      <tbody>
+        ${repos.map(r => `<tr>
+          <td style="font-family:var(--mono);font-size:12px">${r.repo_slug}</td>
+          <td style="font-family:var(--mono)">${r.total}</td>
+          <td style="font-family:var(--mono);color:var(--red)">${r.dead}</td>
+          <td style="font-family:var(--mono);color:var(--green)">${r.active}</td>
+          <td style="font-family:var(--mono);color:var(--blue)">${r.protected}</td>
+          <td style="font-family:var(--mono)">${r.dead_pct}%</td>
+          <td style="min-width:100px">
+            <div style="height:6px;background:var(--border);border-radius:3px;overflow:hidden">
+              <div style="height:100%;width:${r.dead_pct}%;background:${healthColor(r.dead_pct)};border-radius:3px"></div>
+            </div>
+          </td>
+        </tr>`).join('')}
+      </tbody>
+    </table>`;
+  }
+
+  // ----- Load scans -----
+  async function loadScans() {
+    document.getElementById('scansTable').innerHTML = '<div class="loading">Loading...</div>';
+    const scans = await apiFetch('/scans?limit=20');
+    if (!scans) return;
+
+    if (!scans.length) {
+      document.getElementById('scansTable').innerHTML = '<div class="empty"><div class="empty-icon">🔄</div><div class="empty-title">No scans yet</div><div class="empty-sub">Click Run Scan to start</div></div>';
+      return;
+    }
+
+    document.getElementById('scansTable').innerHTML = `<table>
+      <thead><tr>
+        <th>Run ID</th>
+        <th>Status</th>
+        <th>Started</th>
+        <th>Duration</th>
+        <th>Repos</th>
+        <th>Branches</th>
+        <th>Dead</th>
+        <th>Errors</th>
+      </tr></thead>
+      <tbody>
+        ${scans.map(s => {
+          const dur = s.completed_at ? Math.round((new Date(s.completed_at) - new Date(s.started_at)) / 1000) : '—';
+          return `<tr>
+            <td style="font-family:var(--mono);font-size:10px;color:var(--text-dim)">${s.run_id.slice(0,8)}…</td>
+            <td>${statusBadge(s.status)}</td>
+            <td style="font-family:var(--mono);font-size:11px">${fmtDate(s.started_at)}</td>
+            <td style="font-family:var(--mono);font-size:11px">${dur === '—' ? '—' : dur + 's'}</td>
+            <td style="font-family:var(--mono)">${s.repos_scanned}</td>
+            <td style="font-family:var(--mono)">${s.branches_scanned}</td>
+            <td style="font-family:var(--mono);color:var(--red)">${s.dead_branches_found}</td>
+            <td style="font-family:var(--mono);color:${s.errors?.length ? 'var(--red)' : 'var(--text-muted)'}">${s.errors?.length || 0}</td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+    </table>`;
+  }
+
+  // ----- Branch detail modal -----
+  async function showBranch(repo, branchEncoded) {
+    const branch = decodeURIComponent(branchEncoded);
+    const data = await apiFetch(`/branches/${repo}/${encodeURIComponent(branch)}`);
+    if (!data) return;
+
+    document.getElementById('modalRepo').textContent = repo;
+    document.getElementById('modalBranchName').textContent = branch;
+
+    const reasons = data.dead_reason_descriptions || [];
+
+    document.getElementById('modalContent').innerHTML = `
+      <div style="margin-bottom:12px">${statusPill(data.status)}</div>
+      <div class="detail-grid">
+        <div class="detail-item">
+          <div class="detail-key">Last Commit</div>
+          <div class="detail-val">${fmtDate(data.latest_commit_date)}</div>
+        </div>
+        <div class="detail-item">
+          <div class="detail-key">Author</div>
+          <div class="detail-val">${data.latest_commit_author || '—'}</div>
+        </div>
+        <div class="detail-item">
+          <div class="detail-key">Total Commits (sampled)</div>
+          <div class="detail-val">${data.total_commits}</div>
+        </div>
+        <div class="detail-item">
+          <div class="detail-key">Commits Behind Default</div>
+          <div class="detail-val">${data.commits_behind_default}</div>
+        </div>
+        <div class="detail-item">
+          <div class="detail-key">Open PRs</div>
+          <div class="detail-val" style="color:${data.open_pr_count>0?'var(--green)':'inherit'}">${data.open_pr_count}</div>
+        </div>
+        <div class="detail-item">
+          <div class="detail-key">Fully Merged</div>
+          <div class="detail-val">${data.is_fully_merged ? '✅ Yes' : '❌ No'}</div>
+        </div>
+        <div class="detail-item" style="grid-column:span 2">
+          <div class="detail-key">Last Commit Message</div>
+          <div class="detail-val" style="font-size:11px;color:var(--text-dim)">${data.latest_commit_message || '—'}</div>
+        </div>
+      </div>
+
+      ${reasons.length ? `
+        <div style="font-family:var(--mono);font-size:10px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px">Dead Reasons</div>
+        <div class="panel" style="margin-bottom:0">
+          <ul class="reasons-list">
+            ${reasons.map(r => `<li><span class="r-icon">⚠️</span><span>${r}</span></li>`).join('')}
+          </ul>
+        </div>` : data.status === 'active' ? `<div style="color:var(--green);font-family:var(--mono);font-size:12px">✅ Branch is active — no dead signals detected</div>` : ''}
+    `;
+
+    document.getElementById('branchModal').classList.add('open');
+  }
+
+  function closeModal() {
+    document.getElementById('branchModal').classList.remove('open');
+  }
+
+  document.getElementById('branchModal').addEventListener('click', e => {
+    if (e.target === document.getElementById('branchModal')) closeModal();
+  });
+
+  // ----- Trigger scan -----
+  async function triggerScan() {
+    const btn = document.getElementById('triggerScanBtn');
+    btn.disabled = true;
+    document.getElementById('scanStatus').textContent = '⚡ Scanning...';
+
+    const r = await fetch(API + '/scans/trigger', { method: 'POST' });
+    if (r.ok) {
+      showToast('Scan started! Results will appear when complete.', 'info');
+      pollScanStatus();
+    } else {
+      const err = await r.json();
+      showToast(err.detail || 'Could not start scan', 'error');
+      btn.disabled = false;
+      document.getElementById('scanStatus').textContent = 'Scan failed';
+    }
+  }
+
+  let pollInterval;
+  function pollScanStatus() {
+    clearInterval(pollInterval);
+    pollInterval = setInterval(async () => {
+      const scan = await apiFetch('/scans/latest');
+      if (!scan) return;
+
+      if (scan.status === 'completed') {
+        clearInterval(pollInterval);
+        document.getElementById('triggerScanBtn').disabled = false;
+        document.getElementById('scanStatus').textContent =
+          `✅ Done — ${scan.branches_scanned} branches, ${scan.dead_branches_found} dead`;
+        showToast(`Scan complete: ${scan.dead_branches_found} dead branches found`, 'success');
+        loadDashboard();
+      } else if (scan.status === 'failed') {
+        clearInterval(pollInterval);
+        document.getElementById('triggerScanBtn').disabled = false;
+        document.getElementById('scanStatus').textContent = '❌ Scan failed';
+        showToast('Scan failed. Check logs.', 'error');
+      } else {
+        document.getElementById('scanStatus').textContent = `⚡ Running...`;
+      }
+    }, 3000);
+  }
+
+  // ----- Repo filter options -----
+  async function loadRepoOptions(selectId) {
+    const repos = await apiFetch('/repos');
+    if (!repos) return;
+    const select = document.getElementById(selectId);
+    const current = select.value;
+    select.innerHTML = '<option value="">All Repos</option>' +
+      repos.map(r => `<option value="${r.repo_slug}"${r.repo_slug===current?' selected':''}>${r.repo_slug}</option>`).join('');
+  }
+
+  // ----- Pagination -----
+  function renderPagination(containerId, currentPage, totalPages, onClick) {
+    const el = document.getElementById(containerId);
+    if (totalPages <= 1) { el.innerHTML = ''; return; }
+
+    const pages = [];
+    for (let i = Math.max(1, currentPage - 2); i <= Math.min(totalPages, currentPage + 2); i++) {
+      pages.push(i);
+    }
+
+    el.innerHTML = `
+      <button class="page-btn" ${currentPage===1?'disabled':''} onclick="(${onClick.toString()})(${currentPage-1})">← Prev</button>
+      ${pages.map(p => `<button class="page-btn ${p===currentPage?'active':''}" onclick="(${onClick.toString()})(${p})">${p}</button>`).join('')}
+      <button class="page-btn" ${currentPage===totalPages?'disabled':''} onclick="(${onClick.toString()})(${currentPage+1})">Next →</button>
+      <span class="page-info">Page ${currentPage} of ${totalPages}</span>
+    `;
+  }
+
+  // ----- Helpers -----
+  function statusPill(status) {
+    const icons = { dead: '💀', active: '✅', protected: '🔒', unknown: '❓' };
+    return `<span class="status-pill ${status}">${icons[status]||''} ${status}</span>`;
+  }
+
+  function statusBadge(status) {
+    const colors = { completed: 'var(--green)', running: 'var(--accent)', failed: 'var(--red)' };
+    return `<span style="font-family:var(--mono);font-size:11px;color:${colors[status]||'var(--text-dim)'}">${status}</span>`;
+  }
+
+  function fmtDate(d) {
+    if (!d) return '—';
+    const dt = new Date(d);
+    if (isNaN(dt)) return '—';
+    return dt.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+  }
+
+  function isStale(d) {
+    if (!d) return false;
+    const dt = new Date(d);
+    const sixMonths = new Date();
+    sixMonths.setMonth(sixMonths.getMonth() - 6);
+    return dt < sixMonths;
+  }
+
+  function healthColor(pct) {
+    if (pct < 20) return 'var(--green)';
+    if (pct < 50) return '#f39c12';
+    return 'var(--red)';
+  }
+
+  function showToast(msg, type = 'info') {
+    const el = document.createElement('div');
+    el.className = `toast ${type}`;
+    el.textContent = msg;
+    document.getElementById('toastContainer').appendChild(el);
+    setTimeout(() => el.remove(), 5000);
+  }
+
+  // ----- Init -----
+  loadDashboard();
+</script>
+</body>
+</html>
